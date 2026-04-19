@@ -586,9 +586,9 @@ with st.sidebar:
                                          default=auto_sensitive[:4],
                                          help="Columns for fairness audit (demographic attributes)")
 
-        split_ratio = st.slider("Train/Test split", 0.5, 0.9, 0.8, 0.05,
-                                 format="%.0f%%",
-                                 help="Proportion of data used for training")
+        split_ratio = st.slider("Train/Test split", 50, 90, 80, 5,
+                                 format="%d%%",
+                                 help="Proportion of data used for training") / 100
 
         st.markdown("---")
         train_btn = st.button("🚀 Train All 3 Models", use_container_width=True)
