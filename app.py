@@ -1,6 +1,6 @@
 """
 Hospital Readmission Risk Predictor
-Augmented AI Platform for Clinical Teams — Streamlit Edition
+Augmented AI Platform for Clinical Teams - Streamlit Edition
 """
 
 import warnings
@@ -49,7 +49,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Custom CSS — preserving original light-medical theme
+# Custom CSS - preserving original light-medical theme
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -540,7 +540,7 @@ st.markdown("""
   <div class='badge'>Healthcare AI &middot; Binary Classification</div>
   <h1>🏥 Hospital Readmission Risk Predictor</h1>
   <p>
-    Augmented AI platform for clinical teams — upload patient data,
+    Augmented AI platform for clinical teams - upload patient data,
     train three ML models, surface SHAP explanations,
     audit fairness across subgroups, and export professional PDF clinical memos.
   </p>
@@ -548,7 +548,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sidebar — data upload & config (always visible)
+# Sidebar - data upload & config (always visible)
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📂 Data Upload")
@@ -716,7 +716,7 @@ with tab_data:
                 <div class='signal-warn'>
                   <strong>⚠️ Low Predictive Signal Detected</strong><br>
                   The best AUC-ROC is {S.metrics[S.best_name]['auc']:.3f} (near 0.50 = random).
-                  This typically means the dataset labels do not correlate with features —
+                  This typically means the dataset labels do not correlate with features -
                   common in purely synthetic/randomly-generated datasets.
                   With a real clinical dataset, AUC values of 0.75–0.90 are typical.
                 </div>
@@ -770,7 +770,7 @@ with tab_roc:
 
 # ── Tab 2: Explainability ─────────────────────────────────────────────────────
 with tab_shap:
-    st.markdown("<p class='section-head'>Global Explainability — SHAP Feature Importance</p>",
+    st.markdown("<p class='section-head'>Global Explainability - SHAP Feature Importance</p>",
                 unsafe_allow_html=True)
     st.markdown("<p class='section-sub'>Which features drive readmission risk across the entire patient population?</p>",
                 unsafe_allow_html=True)
@@ -802,7 +802,7 @@ with tab_shap:
                 marker_color=[COLORS.get(S.chosen_name, '#0284c7')] * len(feats),
                 text=[f'{v:.4f}' for v in vals[::-1]], textposition='outside'))
             fig.update_layout(
-                title=f'Global Feature Importance — {S.chosen_name}  (Mean |SHAP|)',
+                title=f'Global Feature Importance - {S.chosen_name}  (Mean |SHAP|)',
                 xaxis_title='Mean |SHAP Value|', height=520,
                 plot_bgcolor='#f8fafc', paper_bgcolor='#ffffff',
                 margin=dict(l=200, r=90, t=60, b=40))
@@ -888,7 +888,7 @@ with tab_score:
                     marker_color=colors[::-1],
                     text=[f'{v:+.4f}' for v in t_v[::-1]], textposition='outside'))
                 fig.update_layout(
-                    title=f'Local Explanation — Patient #{idx}  (Red = increases risk, Green = decreases)',
+                    title=f'Local Explanation - Patient #{idx}  (Red = increases risk, Green = decreases)',
                     xaxis_title='SHAP Value', height=440,
                     plot_bgcolor='#f8fafc', paper_bgcolor='#ffffff',
                     margin=dict(l=210, r=90, t=60, b=40))
@@ -1005,7 +1005,7 @@ with tab_thr:
         thr = S.threshold
         m   = threshold_metrics(S.y_test, S.probs[nm], thr)
 
-        st.markdown(f"<p class='section-head'>At threshold {thr:.2f} — {nm}</p>", unsafe_allow_html=True)
+        st.markdown(f"<p class='section-head'>At threshold {thr:.2f} - {nm}</p>", unsafe_allow_html=True)
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Sensitivity (TPR)", f"{m['Sensitivity']:.1%}")
