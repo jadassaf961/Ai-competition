@@ -107,7 +107,6 @@ html, body, [class*="css"] {
 .section-sub  { font-size: 13px; color: #64748b; margin: 0 0 14px; }
 
 .risk-hi { background:#fef2f2;border:2px solid #fca5a5;color:#dc2626;padding:7px 20px;border-radius:100px;font-weight:700;font-size:15px;display:inline-block; }
-.risk-md { background:#fffbeb;border:2px solid #fcd34d;color:#d97706;padding:7px 20px;border-radius:100px;font-weight:700;font-size:15px;display:inline-block; }
 .risk-lo { background:#f0fdf4;border:2px solid #86efac;color:#16a34a;padding:7px 20px;border-radius:100px;font-weight:700;font-size:15px;display:inline-block; }
 
 .chk-item {
@@ -217,7 +216,7 @@ table.dfp tr:hover td { background:#f8fafc; }
   font-size: 12px; color: #94a3b8; margin-top: 14px;
 }
 
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 18px 0 22px; }
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0 22px; }
 .stat-card {
   background: white;
   border: 1px solid #e2e8f0;
@@ -232,7 +231,6 @@ table.dfp tr:hover td { background:#f8fafc; }
   background: #0ea5e9;
 }
 .stat-card.hi::before { background: #dc2626; }
-.stat-card.md::before { background: #d97706; }
 .stat-card.lo::before { background: #16a34a; }
 .stat-label { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 600; letter-spacing: .6px; }
 .stat-value { font-size: 30px; font-weight: 700; color: #0f172a; margin-top: 6px; }
@@ -371,7 +369,7 @@ section[data-testid="stSidebar"] { display: none !important; }
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 COLORS = {'XGBoost': '#0284c7', 'Random Forest': '#0d9488', 'Logistic Regression': '#6366f1'}
-HIGH_COLOR, MED_COLOR, LOW_COLOR = '#dc2626', '#d97706', '#16a34a'
+HIGH_COLOR, LOW_COLOR = '#dc2626', '#16a34a'
 
 BASE_CHECKLIST = [
     'Schedule follow-up appointment within 7 days of discharge',
@@ -558,7 +556,7 @@ _defaults = dict(
     all_probs=None,                     # per-row probability for full dataset
     all_shap=None,                      # SHAP values for full dataset (test-set slice used)
     clinical_selected_idx=None,         # currently-selected patient row in clinical roster
-    clinical_filter='All',              # 'All' | 'High' | 'Medium' | 'Low'
+    clinical_filter='All',              # 'All' | 'High' | 'Low'
     clinical_search='',                 # search string for patient lookup
     clinical_id_col=None,               # column used as patient ID in roster
     analysis_done=False,                # True once models + all-row probs + SHAP done
@@ -580,19 +578,12 @@ def df_to_html(df, max_rows=5):
     return f"<table class='dfp'><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"
 
 def risk_label(p, thr):
-    hi = thr + (1 - thr) * 0.4
-    lo = thr * 0.4
-    if p >= hi:  return 'HIGH RISK',   'risk-hi', HIGH_COLOR
-    if p >= lo:  return 'MEDIUM RISK', 'risk-md', MED_COLOR
-    return           'LOW RISK',    'risk-lo', LOW_COLOR
+    if p >= thr: return 'HIGH RISK', 'risk-hi', HIGH_COLOR
+    return             'LOW RISK',  'risk-lo', LOW_COLOR
 
 def risk_tier(p, thr):
-    """Short tier label: 'High' | 'Medium' | 'Low'."""
-    hi = thr + (1 - thr) * 0.4
-    lo = thr * 0.4
-    if p >= hi: return 'High'
-    if p >= lo: return 'Medium'
-    return 'Low'
+    """Short tier label: 'High' | 'Low'."""
+    return 'High' if p >= thr else 'Low'
 
 def _is_id_like(series):
     if series.dtype != object:
@@ -941,9 +932,8 @@ def generate_pdf(patient_info, risk_score, risk_cat, top_factors,
 
     section('Readmission Risk Assessment')
     pct = int(risk_score * 100)
-    if risk_cat == 'HIGH RISK':     pdf.set_fill_color(220, 38, 38)
-    elif risk_cat == 'MEDIUM RISK': pdf.set_fill_color(217, 119, 6)
-    else:                           pdf.set_fill_color(22, 163, 74)
+    if risk_cat == 'HIGH RISK': pdf.set_fill_color(220, 38, 38)
+    else:                       pdf.set_fill_color(22, 163, 74)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 13)
     pdf.cell(70, 12, f'{pct}%  -  {risk_cat}',
@@ -1605,7 +1595,7 @@ if S.view_mode == 'technical':
                 # Checklist
                 st.markdown("---")
                 tf  = S.last_top_factors or []
-                cat_for_cl = S.last_cat or 'MEDIUM RISK'
+                cat_for_cl = S.last_cat or 'HIGH RISK'
                 cl  = generate_checklist(tf, cat_for_cl)
                 S.last_checklist = cl
                 st.markdown("<p class='section-head'>Preventive Action Checklist</p>", unsafe_allow_html=True)
@@ -2002,7 +1992,6 @@ else:
         tiers = np.array([risk_tier(p, thr) for p in probs])
 
         n_high = int((tiers == 'High').sum())
-        n_med  = int((tiers == 'Medium').sum())
         n_low  = int((tiers == 'Low').sum())
 
         # ── If a patient is selected, render the drill-in view ───────────────
@@ -2175,7 +2164,7 @@ else:
             this_pct   = float(prob * 100)
             percentile = float((cohort_pct <= this_pct).mean() * 100)
             fig_pos = go.Figure()
-            for tier_name, tcolor in [('Low', LOW_COLOR), ('Medium', MED_COLOR), ('High', HIGH_COLOR)]:
+            for tier_name, tcolor in [('Low', LOW_COLOR), ('High', HIGH_COLOR)]:
                 mask = tiers == tier_name
                 if mask.any():
                     fig_pos.add_trace(go.Histogram(
@@ -2306,11 +2295,6 @@ else:
                 <div class='stat-value hi'>{n_high:,}</div>
                 <div class='stat-sub'>{(n_high/max(n_total,1)):.0%} of cohort</div>
               </div>
-              <div class='stat-card md'>
-                <div class='stat-label'>Medium risk</div>
-                <div class='stat-value md'>{n_med:,}</div>
-                <div class='stat-sub'>{(n_med/max(n_total,1)):.0%} of cohort</div>
-              </div>
               <div class='stat-card lo'>
                 <div class='stat-label'>Low risk</div>
                 <div class='stat-value lo'>{n_low:,}</div>
@@ -2339,7 +2323,7 @@ else:
             with viz_tab1:
                 risk_pct = probs * 100
                 fig_dist = go.Figure()
-                for tier_name, tcolor in [('Low', LOW_COLOR), ('Medium', MED_COLOR), ('High', HIGH_COLOR)]:
+                for tier_name, tcolor in [('Low', LOW_COLOR), ('High', HIGH_COLOR)]:
                     mask = (tiers == tier_name)
                     if mask.any():
                         fig_dist.add_trace(go.Histogram(
@@ -2510,7 +2494,7 @@ else:
                     if len(landscape) > 4000:
                         landscape = landscape.sample(4000, random_state=42)
                     fig_land = go.Figure()
-                    for tier_name, tcolor in [('Low', LOW_COLOR), ('Medium', MED_COLOR), ('High', HIGH_COLOR)]:
+                    for tier_name, tcolor in [('Low', LOW_COLOR), ('High', HIGH_COLOR)]:
                         mask = landscape['tier'] == tier_name
                         fig_land.add_trace(go.Scatter(
                             x=landscape.loc[mask, 'x'],
@@ -2562,9 +2546,9 @@ else:
             with fc:
                 tier_filter = st.radio(
                     "Risk tier",
-                    ["All", "High", "Medium", "Low"],
+                    ["All", "High", "Low"],
                     horizontal=True,
-                    index=["All","High","Medium","Low"].index(S.clinical_filter),
+                    index=["All","High","Low"].index(S.clinical_filter if S.clinical_filter in ["All","High","Low"] else "All"),
                     key="clin_filter",
                 )
                 S.clinical_filter = tier_filter
@@ -2636,7 +2620,7 @@ else:
                     ),
                     'Risk tier': st.column_config.TextColumn(
                         'Risk tier',
-                        help='High / Medium / Low classification based on risk threshold',
+                        help='High / Low classification based on risk threshold',
                     ),
                 },
             )
