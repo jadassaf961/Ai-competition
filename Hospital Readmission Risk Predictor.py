@@ -560,6 +560,8 @@ _defaults = dict(
     clinical_search='',                 # search string for patient lookup
     clinical_id_col=None,               # column used as patient ID in roster
     analysis_done=False,                # True once models + all-row probs + SHAP done
+    clinical_new_patient_mode=False,    # True when the "Score New Patient" form is open
+    new_patient_result=None,            # dict with prediction result for the new patient form
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -584,6 +586,30 @@ def risk_label(p, thr):
 def risk_tier(p, thr):
     """Short tier label: 'High' | 'Low'."""
     return 'High' if p >= thr else 'Low'
+
+def preprocess_single_patient(patient_dict, feature_names):
+    """Convert a dict of raw clinical values into a model-ready numpy row.
+    Applies the same clipping + one-hot encoding used during training.
+    Missing optional fields default to the midpoint of their plausible range."""
+    row = {}
+    for c in NUMERIC_COLS:
+        val = patient_dict.get(c, None)
+        lo, hi = NUMERIC_PLAUSIBLE_RANGE[c]
+        try:
+            val = float(val) if val not in (None, '') else (lo + hi) / 2.0
+        except (TypeError, ValueError):
+            val = (lo + hi) / 2.0
+        row[c] = max(lo, min(hi, val))
+    for c in CATEGORICAL_COLS:
+        row[c] = str(patient_dict.get(c, 'Unknown'))
+    df_row = pd.DataFrame([row])
+    cat_present = [c for c in CATEGORICAL_COLS if c in df_row.columns]
+    if cat_present:
+        df_row = pd.get_dummies(df_row, columns=cat_present, drop_first=False, dtype=float)
+    for feat in feature_names:
+        if feat not in df_row.columns:
+            df_row[feat] = 0.0
+    return df_row[feature_names].values
 
 def _is_id_like(series):
     if series.dtype != object:
@@ -2013,7 +2039,7 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
-    # ─────────── STATE 3: Analysis complete — roster / drill-in ───────────────
+    # ─────────── STATE 3: Analysis complete — roster / drill-in / new patient ──
     else:
         df = S.df
         thr = S.threshold
@@ -2024,8 +2050,255 @@ else:
         n_high = int((tiers == 'High').sum())
         n_low  = int((tiers == 'Low').sum())
 
-        # ── If a patient is selected, render the drill-in view ───────────────
-        if S.clinical_selected_idx is not None and 0 <= S.clinical_selected_idx < n_total:
+        # ── Top action bar ───────────────────────────────────────────────────
+        if not S.clinical_selected_idx is not None:
+            act_col1, act_col2, act_col3 = st.columns([2, 2, 4])
+            with act_col1:
+                if st.button("🏠 Patient Roster",
+                             use_container_width=True,
+                             type="primary" if not S.clinical_new_patient_mode else "secondary"):
+                    S.clinical_new_patient_mode = False
+                    S.new_patient_result = None
+                    S.clinical_selected_idx = None
+                    st.rerun()
+            with act_col2:
+                if st.button("➕ Score New Patient",
+                             use_container_width=True,
+                             type="primary" if S.clinical_new_patient_mode else "secondary"):
+                    S.clinical_new_patient_mode = True
+                    S.clinical_selected_idx = None
+                    st.rerun()
+
+        # ── New Patient form ─────────────────────────────────────────────────
+        if S.clinical_new_patient_mode:
+            st.markdown("""
+            <div style='background:linear-gradient(120deg,#f0f9ff,#e0f2fe);
+                        border:1px solid #bae6fd;border-radius:12px;
+                        padding:18px 24px;margin:12px 0 20px;'>
+              <div style='font-size:17px;font-weight:700;color:#0c4a6e;'>
+                New Patient Risk Assessment
+              </div>
+              <div style='font-size:13px;color:#64748b;margin-top:3px;'>
+                Enter the patient's clinical details below and click Predict.
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.form("new_patient_form", clear_on_submit=False):
+                # ── Section 1: Demographics ──────────────────────────────────
+                st.markdown("**Demographics**")
+                d1, d2, d3, d4 = st.columns(4)
+                age        = d1.number_input("Age (years)",       min_value=0,   max_value=120,  value=65,  step=1)
+                gender     = d2.selectbox("Gender",               CATEGORY_VALUES['gender'])
+                weight_kg  = d3.number_input("Weight (kg)",       min_value=20,  max_value=300,  value=75,  step=1)
+                height_cm  = d4.number_input("Height (cm)",       min_value=100, max_value=230,  value=170, step=1)
+                bmi_auto   = round(weight_kg / ((height_cm / 100) ** 2), 1)
+                st.caption(f"Auto-calculated BMI: **{bmi_auto}**")
+
+                # ── Section 2: Clinical History ──────────────────────────────
+                st.markdown("**Clinical History**")
+                h1, h2, h3 = st.columns(3)
+                prev_admissions   = h1.number_input("Previous admissions",     min_value=0, max_value=30, value=2, step=1)
+                chronic_condition = h2.selectbox("Chronic condition",           CATEGORY_VALUES['chronic_conditions'])
+                medications_count = h3.number_input("Number of medications",    min_value=0, max_value=40, value=4, step=1)
+                mental_health     = h2.selectbox("Mental health issue",         CATEGORY_VALUES['mental_health_issue'])  # reuse col
+                social_support    = h3.selectbox("Social support",              CATEGORY_VALUES['social_support'])       # reuse col
+
+                # ── Section 3: Current Admission ────────────────────────────
+                st.markdown("**Current Admission**")
+                a1, a2, a3 = st.columns(3)
+                admission_type   = a1.selectbox("Admission type",               CATEGORY_VALUES['admission_type'])
+                length_of_stay   = a2.number_input("Length of stay (days)",     min_value=0, max_value=120, value=5, step=1)
+                procedures_count = a3.number_input("Procedures performed",      min_value=0, max_value=20,  value=1, step=1)
+                followup         = a1.selectbox("Follow-up compliance",         CATEGORY_VALUES['followup_compliance'])
+
+                # ── Section 4: Lab Results ───────────────────────────────────
+                st.markdown("**Latest Lab Results**")
+                l1, l2, l3 = st.columns(3)
+                hemoglobin   = l1.number_input("Hemoglobin (g/dL)",    min_value=4.0,  max_value=22.0,  value=13.0, step=0.1, format="%.1f")
+                glucose      = l2.number_input("Glucose (mg/dL)",      min_value=40,   max_value=600,   value=100,  step=1)
+                creatinine   = l3.number_input("Creatinine (mg/dL)",   min_value=0.2,  max_value=15.0,  value=1.0,  step=0.1, format="%.1f")
+
+                # ── Section 5: Lifestyle & Social ────────────────────────────
+                st.markdown("**Lifestyle & Social Factors**")
+                ls1, ls2, ls3 = st.columns(3)
+                smoking_status   = ls1.selectbox("Smoking status",              CATEGORY_VALUES['smoking_status'])
+                alcohol_use      = ls2.selectbox("Alcohol use",                 CATEGORY_VALUES['alcohol_use'])
+                physical_activity= ls3.selectbox("Physical activity",           CATEGORY_VALUES['physical_activity'])
+                insurance_type   = ls1.selectbox("Insurance type",              CATEGORY_VALUES['insurance_type'])
+
+                st.markdown("")
+                submitted = st.form_submit_button("🔍 Predict Readmission Risk", use_container_width=True)
+
+            if submitted:
+                if not S.trained or not S.feature_names:
+                    st.error("Models not ready — please re-upload the dataset and run the analysis.")
+                else:
+                    patient_dict = {
+                        'age':                     float(age),
+                        'weight_kg':               float(weight_kg),
+                        'height_cm':               float(height_cm),
+                        'bmi':                     float(bmi_auto),
+                        'num_previous_admissions': float(prev_admissions),
+                        'medications_count':       float(medications_count),
+                        'last_hemoglobin':         float(hemoglobin),
+                        'last_glucose':            float(glucose),
+                        'last_creatinine':         float(creatinine),
+                        'length_of_stay':          float(length_of_stay),
+                        'procedures_count':        float(procedures_count),
+                        'gender':                  gender,
+                        'chronic_conditions':      chronic_condition,
+                        'admission_type':          admission_type,
+                        'smoking_status':          smoking_status,
+                        'alcohol_use':             alcohol_use,
+                        'physical_activity':       physical_activity,
+                        'insurance_type':          insurance_type,
+                        'followup_compliance':     followup,
+                        'social_support':          social_support,
+                        'mental_health_issue':     mental_health,
+                    }
+                    try:
+                        nm   = S.chosen_name or S.best_name
+                        X_np = preprocess_single_patient(patient_dict, S.feature_names)
+                        prob = float(S.models[nm].predict_proba(X_np)[0, 1])
+                        cat, cls, color = risk_label(prob, thr)
+                        tier = risk_tier(prob, thr)
+                        confidence = prob if tier == 'High' else (1.0 - prob)
+                        S.new_patient_result = dict(
+                            prob=prob, cat=cat, cls=cls, color=color,
+                            tier=tier, confidence=confidence,
+                            patient_dict=patient_dict, model_name=nm,
+                        )
+                        S.last_prob = prob
+                        S.last_cat  = cat
+                    except Exception as e:
+                        st.error(f"Prediction error: {e}")
+
+            # ── Show prediction result ────────────────────────────────────────
+            if S.new_patient_result:
+                r = S.new_patient_result
+                prob, cat, cls, color = r['prob'], r['cat'], r['cls'], r['color']
+                tier, confidence      = r['tier'], r['confidence']
+
+                st.markdown("---")
+                res_col, drivers_col = st.columns([1, 1.1])
+
+                with res_col:
+                    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-title'>Prediction Result</div>", unsafe_allow_html=True)
+                    fig_np = go.Figure(go.Indicator(
+                        mode='gauge+number',
+                        value=round(prob * 100, 1),
+                        number={'suffix': '%', 'font': {'size': 44, 'color': color}},
+                        gauge={
+                            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': '#94a3b8'},
+                            'bar':  {'color': color, 'thickness': 0.28},
+                            'bgcolor': 'white',
+                            'borderwidth': 1, 'bordercolor': '#e2e8f0',
+                            'steps': [
+                                {'range': [0,         thr * 100], 'color': '#dcfce7'},
+                                {'range': [thr * 100, 100],       'color': '#fee2e2'},
+                            ],
+                            'threshold': {'line': {'color': '#1e293b', 'width': 3},
+                                          'thickness': 0.75, 'value': thr * 100},
+                        }
+                    ))
+                    fig_np.update_layout(height=280, paper_bgcolor='rgba(0,0,0,0)',
+                                         margin=dict(t=10, b=10, l=30, r=30))
+                    st.plotly_chart(fig_np, use_container_width=True)
+                    st.markdown(
+                        f"<div style='text-align:center;'>"
+                        f"<span class='{cls}'>{cat}</span>"
+                        f"<div style='margin-top:8px;font-size:13px;color:#475569;font-weight:500;'>"
+                        f"Model confidence: <strong style='color:{color};'>{confidence*100:.0f}%</strong>"
+                        f"&nbsp;&middot;&nbsp;Model: <em>{r['model_name']}</em>"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                with drivers_col:
+                    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-title'>Key risk factors for this patient</div>",
+                                unsafe_allow_html=True)
+
+                    # Build a SHAP-style importance estimate using global weights + patient values
+                    if S.shap_vals is not None and S.feature_names:
+                        mean_abs = np.abs(S.shap_vals).mean(axis=0)
+                        top_idx  = np.argsort(mean_abs)[::-1][:6]
+                        top_factors_np = []
+                        for i in top_idx:
+                            feat  = S.feature_names[i]
+                            label = humanize_feature(feat)
+                            # sign: positive if patient value > mean, for one-hot cols check if =1
+                            try:
+                                nm_model = S.chosen_name or S.best_name
+                                X_np2    = preprocess_single_patient(r['patient_dict'], S.feature_names)
+                                feat_val = float(X_np2[0, i])
+                                pop_mean = float(np.mean(S.X_train[:, i])) if S.X_train is not None else 0.5
+                                sign     = 1 if feat_val > pop_mean else -1
+                            except Exception:
+                                sign = 1
+                            direction_cls = 'up' if sign > 0 else 'down'
+                            arrow = '▲' if sign > 0 else '▼'
+                            effect = 'Increases risk' if sign > 0 else 'Protective'
+                            st.markdown(
+                                f"<div class='driver-chip {direction_cls}'>"
+                                f"<span class='arrow'>{arrow}</span>"
+                                f"<span class='label'>{label}</span>"
+                                f"<span class='detail'>{effect}</span>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+                            top_factors_np.append((feat, float(mean_abs[i]) * sign))
+
+                        # Plain-English summary
+                        rising    = [humanize_feature(f) for f, v in top_factors_np if v > 0][:2]
+                        shielding = [humanize_feature(f) for f, v in top_factors_np if v < 0][:2]
+                        if tier == 'High' and rising:
+                            drivers_txt = ' and '.join(f'<strong>{x}</strong>' for x in rising)
+                            summary_np  = f"This patient's risk is elevated primarily due to {drivers_txt}."
+                        elif tier == 'Low' and shielding:
+                            shield_txt = ' and '.join(f'<strong>{x}</strong>' for x in shielding)
+                            summary_np = f"Risk is low, supported by favourable {shield_txt}."
+                        else:
+                            summary_np = ("Elevated readmission risk based on overall clinical profile."
+                                          if tier == 'High' else
+                                          "Low readmission risk based on overall clinical profile.")
+                        st.markdown(
+                            f"<div style='background:#f8fafc;border-left:4px solid {color};"
+                            f"border-radius:0 8px 8px 0;padding:10px 14px;margin-top:10px;"
+                            f"font-size:13.5px;color:#334155;line-height:1.55;'>"
+                            f"💡 {summary_np}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        S.last_top_factors = top_factors_np
+                    else:
+                        st.info("Run the analysis first to enable detailed risk driver breakdown.")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Checklist
+                st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-title'>Recommended preventive actions</div>",
+                            unsafe_allow_html=True)
+                st.markdown("<div class='panel-sub'>Evidence-based steps tailored to this patient's risk profile.</div>",
+                            unsafe_allow_html=True)
+                checklist_np = generate_checklist(S.last_top_factors or [], cat)
+                S.last_checklist = checklist_np
+                for item in checklist_np:
+                    st.markdown(f"<div class='chk-item'>&#9744;&nbsp;&nbsp;{item}</div>",
+                                unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                st.markdown("""
+                <div class='footer-compliance'>
+                  <strong>CONFIDENTIAL</strong> &middot; Risk scores are decision-support tools
+                  and must be reviewed by qualified clinical staff before any action.
+                </div>
+                """, unsafe_allow_html=True)
+
+        # ── Roster mode (default) ─────────────────────────────────────────────
+        elif S.clinical_selected_idx is not None and 0 <= S.clinical_selected_idx < n_total:
             idx = int(S.clinical_selected_idx)
 
             # Identify patient
@@ -2033,9 +2306,15 @@ else:
             pid = str(df.iloc[idx][pid_col]) if (pid_col and pid_col in df.columns) else f"Row {idx}"
 
             # Back button
-            c_back, _ = st.columns([1, 5])
-            if c_back.button("← Back to Patient Roster", use_container_width=True):
+            c_back, c_new, _ = st.columns([1.4, 1.6, 3])
+            if c_back.button("← Back to Roster", use_container_width=True):
                 S.clinical_selected_idx = None
+                S.clinical_new_patient_mode = False
+                st.rerun()
+            if c_new.button("➕ Score New Patient", use_container_width=True):
+                S.clinical_selected_idx = None
+                S.clinical_new_patient_mode = True
+                S.new_patient_result = None
                 st.rerun()
 
             # Build prediction for this patient using the raw df (re-encode on the fly)
@@ -2406,12 +2685,10 @@ else:
                     annotation_position='top',
                 )
                 fig_dist.update_layout(
-                    barmode='stack',
-                    height=380,
+                    barmode='stack', height=380,
                     xaxis_title='Predicted 30-day readmission risk (%)',
                     yaxis_title='Number of patients',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                     margin=dict(t=30, b=50, l=60, r=30),
                     legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
                     bargap=0.04,
@@ -2421,14 +2698,13 @@ else:
                 st.plotly_chart(fig_dist, use_container_width=True)
                 st.caption(
                     "How the risk scores are distributed across the cohort. The dashed line "
-                    "marks the decision threshold — patients to the right are flagged as high risk."
+                    "marks the decision threshold -- patients to the right are flagged as high risk."
                 )
 
             # ── Viz 2: Top cohort drivers ────────────────────────────────────
             with viz_tab2:
                 if S.shap_vals is not None and S.feature_names:
                     mean_abs = np.abs(S.shap_vals).mean(axis=0)
-                    # Aggregate one-hot expansions back to their base column.
                     agg = {}
                     for feat, val in zip(S.feature_names, mean_abs):
                         base = feat
@@ -2437,7 +2713,8 @@ else:
                                 base = prefix.rstrip('_')
                                 break
                         agg[base] = agg.get(base, 0.0) + float(val)
-                    sorted_items = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:10]
+                    sorted_items = sorted(agg.items(), key=lambda x: x[1])
+                    sorted_items = sorted_items[-12:]
                     sorted_items = sorted_items[::-1]
                     labels  = [humanize_feature(k) for k, _ in sorted_items]
                     values  = [v for _, v in sorted_items]
@@ -2455,8 +2732,7 @@ else:
                     fig_drv.update_layout(
                         height=430,
                         xaxis_title='Average impact on risk score (mean |SHAP|)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         margin=dict(t=20, b=50, l=230, r=80),
                     )
                     fig_drv.update_xaxes(gridcolor='#e2e8f0', zeroline=False)
@@ -2482,23 +2758,15 @@ else:
                 if not subgroup_choices:
                     st.info("No subgroup columns available for this cohort.")
                 else:
-                    chosen = st.selectbox(
-                        "Break risk down by…",
-                        subgroup_choices,
-                        key="subgroup_choice",
-                    )
+                    chosen = st.selectbox("Break risk down by...", subgroup_choices, key="subgroup_choice")
                     if chosen == 'Age band':
                         ages = pd.to_numeric(df[age_col_name], errors='coerce')
                         bins = [0, 40, 55, 65, 75, 200]
-                        labels_ab = ['<40', '40–54', '55–64', '65–74', '75+']
+                        labels_ab = ['<40', '40-54', '55-64', '65-74', '75+']
                         grp = pd.cut(ages, bins=bins, labels=labels_ab, right=False)
                     else:
                         grp = df[chosen].astype(str).fillna('Unknown')
-                    sub = pd.DataFrame({
-                        'group': grp,
-                        'risk':  probs * 100,
-                        'tier':  tiers,
-                    }).dropna(subset=['group'])
+                    sub = pd.DataFrame({'group': grp, 'risk': probs * 100, 'tier': tiers}).dropna(subset=['group'])
                     if sub.empty:
                         st.info("Not enough data to compute subgroup risk.")
                     else:
@@ -2508,18 +2776,15 @@ else:
                             pct_high=('tier', lambda s: (s == 'High').mean() * 100),
                         ).reset_index()
                         sub_agg = sub_agg.sort_values('mean_risk', ascending=False)
-                        fig_sub = make_subplots(
-                            rows=1, cols=2, shared_yaxes=True,
-                            subplot_titles=('Mean risk (%)', '% High-risk patients'),
-                            horizontal_spacing=0.12,
-                        )
+                        fig_sub = make_subplots(rows=1, cols=2, shared_yaxes=True,
+                                                subplot_titles=('Mean risk (%)', '% High-risk patients'),
+                                                horizontal_spacing=0.12)
                         fig_sub.add_trace(go.Bar(
                             x=sub_agg['mean_risk'], y=sub_agg['group'].astype(str),
                             orientation='h', marker_color='#0284c7',
                             text=[f'{v:.1f}%' for v in sub_agg['mean_risk']],
                             textposition='outside',
-                            hovertemplate='%{y}<br>Mean risk: %{x:.1f}%<br>n = '
-                                          + sub_agg['n'].astype(str) + '<extra></extra>',
+                            hovertemplate='%{y}<br>Mean risk: %{x:.1f}%<extra></extra>',
                             name='Mean risk',
                         ), row=1, col=1)
                         fig_sub.add_trace(go.Bar(
@@ -2527,104 +2792,80 @@ else:
                             orientation='h', marker_color=HIGH_COLOR,
                             text=[f'{v:.1f}%' for v in sub_agg['pct_high']],
                             textposition='outside',
-                            hovertemplate='%{y}<br>% High risk: %{x:.1f}%<extra></extra>',
-                            name='% High risk',
+                            hovertemplate='%{y}<br>%% High risk: %{x:.1f}%%<extra></extra>',
+                            name='%% High risk',
                         ), row=1, col=2)
                         fig_sub.update_layout(
                             height=max(320, 60 + 40 * len(sub_agg)),
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            showlegend=False,
-                            margin=dict(t=50, b=40, l=110, r=60),
+                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                            showlegend=False, margin=dict(t=50, b=40, l=110, r=60),
                         )
                         fig_sub.update_xaxes(gridcolor='#e2e8f0', zeroline=False)
                         fig_sub.update_yaxes(zeroline=False)
                         st.plotly_chart(fig_sub, use_container_width=True)
-                        st.caption(
-                            f"Risk concentration within each **{chosen}** group. "
-                            f"Use this to spot subgroups that may need targeted outreach."
-                        )
+                        st.caption(f"Risk concentration within each **{chosen}** group.")
 
-            # ── Viz 4: Risk landscape scatter (age × LOS coloured by tier) ────
+            # ── Viz 4: Risk landscape scatter ────────────────────────────────
             with viz_tab4:
                 xcol = next((c for c in df.columns if c.lower() == 'age'), None)
-                ycol = 'length_of_stay' if 'length_of_stay' in df.columns else \
-                       next((c for c in df.columns if 'stay' in c.lower() or c.lower() == 'los'), None)
+                ycol = 'length_of_stay' if 'length_of_stay' in df.columns else                        next((c for c in df.columns if 'stay' in c.lower() or c.lower() == 'los'), None)
                 if xcol is None or ycol is None:
                     st.info("Risk landscape needs age and length-of-stay columns.")
                 else:
                     x_vals = pd.to_numeric(df[xcol], errors='coerce')
                     y_vals = pd.to_numeric(df[ycol], errors='coerce')
-                    landscape = pd.DataFrame({
-                        'x': x_vals, 'y': y_vals, 'tier': tiers, 'risk': probs * 100,
-                    }).dropna()
+                    landscape = pd.DataFrame({'x': x_vals, 'y': y_vals, 'tier': tiers, 'risk': probs * 100}).dropna()
                     if len(landscape) > 4000:
                         landscape = landscape.sample(4000, random_state=42)
                     fig_land = go.Figure()
                     for tier_name, tcolor in [('Low', LOW_COLOR), ('High', HIGH_COLOR)]:
                         mask = landscape['tier'] == tier_name
                         fig_land.add_trace(go.Scatter(
-                            x=landscape.loc[mask, 'x'],
-                            y=landscape.loc[mask, 'y'],
-                            mode='markers',
-                            name=f'{tier_name} risk',
-                            marker=dict(
-                                color=tcolor,
-                                size=7,
-                                opacity=0.6,
-                                line=dict(color='white', width=0.5),
-                            ),
+                            x=landscape.loc[mask, 'x'], y=landscape.loc[mask, 'y'],
+                            mode='markers', name=f'{tier_name} risk',
+                            marker=dict(color=tcolor, size=7, opacity=0.6,
+                                        line=dict(color='white', width=0.5)),
                             customdata=landscape.loc[mask, 'risk'],
-                            hovertemplate=(
-                                f'{xcol}: %{{x}}<br>{ycol}: %{{y}}'
-                                '<br>Risk: %{customdata:.1f}%<extra></extra>'
-                            ),
+                            hovertemplate=f'{xcol}: %{{x}}<br>{ycol}: %{{y}}<br>Risk: %{{customdata:.1f}}%<extra></extra>',
                         ))
                     fig_land.update_layout(
                         height=430,
                         xaxis_title=xcol.replace('_', ' ').title(),
                         yaxis_title=ycol.replace('_', ' ').title(),
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         margin=dict(t=20, b=50, l=60, r=30),
-                        legend=dict(orientation='h', yanchor='bottom',
-                                    y=1.02, xanchor='right', x=1),
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
                     )
                     fig_land.update_xaxes(gridcolor='#e2e8f0', zeroline=False)
                     fig_land.update_yaxes(gridcolor='#e2e8f0', zeroline=False)
                     st.plotly_chart(fig_land, use_container_width=True)
                     st.caption(
-                        "Each dot is a patient, plotted by age and length of hospital stay, "
-                        "coloured by risk tier. Clusters of red in the upper-right identify "
-                        "older patients with longer stays who typically need closer follow-up."
+                        "Each dot is a patient plotted by age and length of stay, "
+                        "coloured by risk tier."
                     )
             st.markdown("</div>", unsafe_allow_html=True)  # end cohort insights panel
 
-            # ═════════════════ PATIENT ROSTER ═══════════════════════════════
+            # ============== PATIENT ROSTER ==============
             st.markdown("<div class='panel'>", unsafe_allow_html=True)
             st.markdown("<div class='panel-title'>Patient roster</div>", unsafe_allow_html=True)
             st.markdown(
                 "<div class='panel-sub'>Filter by risk tier, search by patient ID, "
-                "then select a row to open the patient's detail view.</div>",
+                "then select a row to open the patient detail view.</div>",
                 unsafe_allow_html=True,
             )
 
             fc, sc = st.columns([1.2, 2])
             with fc:
                 tier_filter = st.radio(
-                    "Risk tier",
-                    ["All", "High", "Low"],
-                    horizontal=True,
+                    "Risk tier", ["All", "High", "Low"], horizontal=True,
                     index=["All","High","Low"].index(S.clinical_filter if S.clinical_filter in ["All","High","Low"] else "All"),
                     key="clin_filter",
                 )
                 S.clinical_filter = tier_filter
             with sc:
                 search = st.text_input(
-                    "Search patient ID",
-                    value=S.clinical_search,
-                    placeholder="Type an MRN or patient ID...",
-                    key="clin_search",
+                    "Search patient ID", value=S.clinical_search,
+                    placeholder="Type an MRN or patient ID...", key="clin_search",
                 )
                 S.clinical_search = search
 
@@ -2673,26 +2914,19 @@ else:
             display_cols = ['Patient', 'Age', 'Key factor', 'Risk %', 'Risk tier']
             event = st.dataframe(
                 roster_df_show[display_cols],
-                use_container_width=True,
-                hide_index=True,
-                height=420,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="clin_roster",
+                use_container_width=True, hide_index=True, height=420,
+                on_select="rerun", selection_mode="single-row", key="clin_roster",
                 column_config={
                     'Risk %': st.column_config.ProgressColumn(
-                        'Risk %',
-                        help='Predicted 30-day readmission probability',
+                        'Risk %', help='Predicted 30-day readmission probability',
                         min_value=0, max_value=100, format='%.1f%%',
                     ),
                     'Risk tier': st.column_config.TextColumn(
-                        'Risk tier',
-                        help='High / Low classification based on risk threshold',
+                        'Risk tier', help='High / Low classification based on risk threshold',
                     ),
                 },
             )
 
-            # Row click -> open patient drill-in view
             if hasattr(event, 'selection') and event.selection.rows:
                 row_pos = event.selection.rows[0]
                 S.clinical_selected_idx = int(roster_df_show.iloc[row_pos]['_idx'])
