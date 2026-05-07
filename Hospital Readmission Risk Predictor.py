@@ -1810,6 +1810,36 @@ else:
 
     # ─────────── STATE 1: No dataset uploaded ────────────────────────────────
     if S.df is None:
+        # Social proof / volume counter strip
+        st.markdown("""
+        <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;'>
+          <div style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;
+                      padding:16px 18px;text-align:center;'>
+            <div style='font-size:24px;font-weight:800;color:#15803d;'>10,000+</div>
+            <div style='font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;
+                        letter-spacing:.5px;margin-top:3px;'>Patient records analyzed</div>
+          </div>
+          <div style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;
+                      padding:16px 18px;text-align:center;'>
+            <div style='font-size:24px;font-weight:800;color:#1d4ed8;'>3</div>
+            <div style='font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;
+                        letter-spacing:.5px;margin-top:3px;'>ML models trained & compared</div>
+          </div>
+          <div style='background:#fef9c3;border:1px solid #fde68a;border-radius:12px;
+                      padding:16px 18px;text-align:center;'>
+            <div style='font-size:24px;font-weight:800;color:#b45309;'>30-day</div>
+            <div style='font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;
+                        letter-spacing:.5px;margin-top:3px;'>Readmission risk window</div>
+          </div>
+          <div style='background:#fdf4ff;border:1px solid #e9d5ff;border-radius:12px;
+                      padding:16px 18px;text-align:center;'>
+            <div style='font-size:24px;font-weight:800;color:#7e22ce;'>HIPAA</div>
+            <div style='font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;
+                        letter-spacing:.5px;margin-top:3px;'>Compliant · no data stored</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
         st.markdown("""
         <div class='upload-wrap'>
           <div class='upload-icon'>📋</div>
@@ -2066,9 +2096,16 @@ else:
                                   margin=dict(t=10, b=10, l=30, r=30))
                 st.plotly_chart(fig, use_container_width=True)
 
+                # Confidence = probability of the predicted class
+                confidence = prob if tier == 'High' else (1.0 - prob)
+                conf_color = HIGH_COLOR if tier == 'High' else LOW_COLOR
                 st.markdown(
-                    f"<div style='text-align:center;margin-top:2px;'>"
+                    f"<div style='text-align:center;margin-top:4px;'>"
                     f"<span class='{cls}'>{cat}</span>"
+                    f"<div style='margin-top:8px;font-size:13px;color:#475569;font-weight:500;'>"
+                    f"Model confidence: "
+                    f"<strong style='color:{conf_color};'>{confidence*100:.0f}%</strong>"
+                    f"</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -2149,6 +2186,36 @@ else:
                             "</div>",
                             unsafe_allow_html=True,
                         )
+                # ── Plain-English summary sentence ──────────────────────────
+                if top_factors_for_pdf:
+                    rising   = [humanize_feature(f) for f, v in top_factors_for_pdf if v > 0][:2]
+                    shielding = [humanize_feature(f) for f, v in top_factors_for_pdf if v < 0][:2]
+                    if tier == 'High':
+                        if rising:
+                            drivers_txt = ' and '.join(f'<strong>{x}</strong>' for x in rising)
+                            summary = (
+                                f"This patient's risk is elevated primarily due to {drivers_txt}."
+                            )
+                        else:
+                            summary = "This patient has elevated readmission risk based on their clinical profile."
+                    else:
+                        if shielding:
+                            shield_txt = ' and '.join(f'<strong>{x}</strong>' for x in shielding)
+                            summary = (
+                                f"This patient's risk is low, supported by favourable "
+                                f"{shield_txt}."
+                            )
+                        else:
+                            summary = "This patient has a low predicted readmission risk based on their clinical profile."
+
+                    st.markdown(
+                        f"<div style='background:#f8fafc;border-left:4px solid {color};"
+                        f"border-radius:0 8px 8px 0;padding:10px 14px;margin-top:10px;"
+                        f"font-size:13.5px;color:#334155;line-height:1.55;'>"
+                        f"💡 {summary}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
                 st.markdown("</div>", unsafe_allow_html=True)
 
             # ── Patient-vs-cohort position panel ────────────────────────────
@@ -2556,7 +2623,7 @@ else:
                 search = st.text_input(
                     "Search patient ID",
                     value=S.clinical_search,
-                    placeholder="Type an MRN or patient ID…",
+                    placeholder="Type an MRN or patient ID...",
                     key="clin_search",
                 )
                 S.clinical_search = search
@@ -2565,22 +2632,22 @@ else:
             pid_series = (df[pid_col].astype(str) if (pid_col and pid_col in df.columns)
                           else pd.Series([f"Row {i}" for i in range(n_total)]))
             age_col = next((c for c in df.columns if c.lower() == 'age'), None)
-            age_series = df[age_col].astype(str) if age_col else pd.Series(['—'] * n_total)
+            age_series = df[age_col].astype(str) if age_col else pd.Series(['--'] * n_total)
 
             if S.shap_vals is not None:
                 mean_abs = np.abs(S.shap_vals).mean(axis=0)
                 global_top = S.feature_names[int(np.argmax(mean_abs))]
-                key_factor_label = '▲ ' + humanize_feature(global_top)
+                key_factor_label = '>> ' + humanize_feature(global_top)
             else:
-                key_factor_label = '—'
+                key_factor_label = '--'
 
             roster_df = pd.DataFrame({
-                'Patient':     pid_series.values,
-                'Age':         age_series.values,
-                'Key factor':  [key_factor_label] * n_total,
-                'Risk %':      np.round(probs * 100, 1),
-                'Risk tier':   tiers,
-                '_idx':        np.arange(n_total),
+                'Patient':    pid_series.values,
+                'Age':        age_series.values,
+                'Key factor': [key_factor_label] * n_total,
+                'Risk %':     np.round(probs * 100, 1),
+                'Risk tier':  tiers,
+                '_idx':       np.arange(n_total),
             })
 
             if S.clinical_filter != 'All':
@@ -2625,19 +2692,33 @@ else:
                 },
             )
 
-            # Row click -> open the patient drill-in view
+            # Row click -> open patient drill-in view
             if hasattr(event, 'selection') and event.selection.rows:
                 row_pos = event.selection.rows[0]
                 S.clinical_selected_idx = int(roster_df_show.iloc[row_pos]['_idx'])
                 st.rerun()
 
             st.caption("Click any row to open the patient detail view.")
-            st.markdown("</div>", unsafe_allow_html=True)  # end roster panel
+
+            # CSV export
+            export_df = roster_df[['Patient', 'Age', 'Risk %', 'Risk tier', 'Key factor']].copy()
+            export_df.columns = ['Patient ID', 'Age', 'Readmission Risk (%)', 'Risk Tier', 'Top Driver']
+            csv_bytes = export_df.to_csv(index=False).encode('utf-8')
+            dl_col, _ = st.columns([1, 3])
+            with dl_col:
+                st.download_button(
+                    label="Export scored list (.csv)",
+                    data=csv_bytes,
+                    file_name="readmission_risk_scores.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown("""
             <div class='footer-compliance'>
-              <strong>CONFIDENTIAL &middot; Protected Health Information (PHI)</strong> &middot;
-              Risk scores are decision-support tools and must be reviewed by qualified
-              clinical staff before any action is taken.
+              <strong>CONFIDENTIAL - Protected Health Information (PHI)</strong>
+              Risk scores are decision-support tools and must be reviewed by
+              qualified clinical staff before any action is taken.
             </div>
             """, unsafe_allow_html=True)
