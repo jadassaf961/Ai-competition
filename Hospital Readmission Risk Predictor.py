@@ -589,9 +589,14 @@ def risk_tier(p, thr):
 
 def preprocess_single_patient(patient_dict, feature_names):
     """Convert a dict of raw clinical values into a model-ready numpy row.
-    Applies the same clipping + one-hot encoding used during training.
-    Missing optional fields default to the midpoint of their plausible range."""
-    row = {}
+
+    Builds the feature vector by walking feature_names exactly as they were
+    created during training (numeric cols keep their name; one-hot cols are
+    named <col>_<value>).  This avoids relying on pd.get_dummies column
+    ordering for a single row, which is the most common source of 0% bugs.
+    """
+    # ── 1. Prepare numeric values ────────────────────────────────────────────
+    num_vals = {}
     for c in NUMERIC_COLS:
         val = patient_dict.get(c, None)
         lo, hi = NUMERIC_PLAUSIBLE_RANGE[c]
@@ -599,17 +604,31 @@ def preprocess_single_patient(patient_dict, feature_names):
             val = float(val) if val not in (None, '') else (lo + hi) / 2.0
         except (TypeError, ValueError):
             val = (lo + hi) / 2.0
-        row[c] = max(lo, min(hi, val))
-    for c in CATEGORICAL_COLS:
-        row[c] = str(patient_dict.get(c, 'Unknown'))
-    df_row = pd.DataFrame([row])
-    cat_present = [c for c in CATEGORICAL_COLS if c in df_row.columns]
-    if cat_present:
-        df_row = pd.get_dummies(df_row, columns=cat_present, drop_first=False, dtype=float)
+        num_vals[c] = float(np.clip(val, lo, hi))
+
+    # ── 2. Prepare categorical values ────────────────────────────────────────
+    # Maps e.g. "gender_Female" → 1.0, "gender_Male" → 0.0
+    cat_lookup = {}
+    for col in CATEGORICAL_COLS:
+        chosen_val = str(patient_dict.get(col, 'Unknown'))
+        # All possible values for this column (from training schema)
+        possible_vals = CATEGORY_VALUES.get(col, [chosen_val])
+        for v in possible_vals:
+            cat_lookup[f"{col}_{v}"] = 1.0 if v == chosen_val else 0.0
+        # Also handle any unseen value the model may have been trained with
+        cat_lookup[f"{col}_{chosen_val}"] = 1.0
+
+    # ── 3. Build vector in the exact order of feature_names ─────────────────
+    vec = []
     for feat in feature_names:
-        if feat not in df_row.columns:
-            df_row[feat] = 0.0
-    return df_row[feature_names].values
+        if feat in num_vals:
+            vec.append(num_vals[feat])
+        elif feat in cat_lookup:
+            vec.append(cat_lookup[feat])
+        else:
+            vec.append(0.0)   # unseen one-hot column → inactive
+
+    return np.array(vec, dtype=float).reshape(1, -1)
 
 def _is_id_like(series):
     if series.dtype != object:
