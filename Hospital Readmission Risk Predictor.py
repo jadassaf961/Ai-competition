@@ -2309,6 +2309,55 @@ else:
                                 unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
+                # ── Export PDF Memo ───────────────────────────────────────────
+                st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-title'>Export Clinical Memo</div>",
+                            unsafe_allow_html=True)
+                st.markdown(
+                    "<div class='panel-sub'>Download a one-page PDF memo summarising "
+                    "this patient's risk assessment and recommended actions.</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("📄  Generate Clinical Memo (PDF)", use_container_width=False,
+                             key="new_pt_pdf_btn"):
+                    _pd = r['patient_dict']
+                    patient_info_np = {
+                        'Patient Type':         'New Patient',
+                        'Age':                  f"{int(_pd.get('age', 0))} yrs",
+                        'Gender':               str(_pd.get('gender', 'N/A')),
+                        'Chronic Condition':    str(_pd.get('chronic_conditions', 'N/A')),
+                        'Admission Type':       str(_pd.get('admission_type', 'N/A')),
+                        'Length of Stay':       f"{int(_pd.get('length_of_stay', 0))} days",
+                        'Follow-up Compliance': str(_pd.get('followup_compliance', 'N/A')),
+                        'Smoking Status':       str(_pd.get('smoking_status', 'N/A')),
+                        'Social Support':       str(_pd.get('social_support', 'N/A')),
+                        'Report Date':          datetime.now().strftime('%Y-%m-%d %H:%M'),
+                    }
+                    with st.spinner("Generating PDF…"):
+                        try:
+                            factors_for_pdf = S.last_top_factors or []
+                            chk_for_pdf     = S.last_checklist   or []
+                            pdf_bytes = generate_pdf(
+                                patient_info_np, r['prob'], r['cat'],
+                                factors_for_pdf, chk_for_pdf,
+                                r['model_name'], thr,
+                            )
+                            ts_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            st.download_button(
+                                label="⬇  Download Clinical Memo PDF",
+                                data=pdf_bytes,
+                                file_name=f"new_patient_memo_{ts_stamp}.pdf",
+                                mime="application/pdf",
+                                key="new_pt_pdf_dl",
+                            )
+                            st.markdown(
+                                "<div class='success-box'>Memo ready — click above to download.</div>",
+                                unsafe_allow_html=True,
+                            )
+                        except Exception as e:
+                            st.error(f"Could not generate the PDF: {e}")
+                st.markdown("</div>", unsafe_allow_html=True)
+
                 st.markdown("""
                 <div class='footer-compliance'>
                   <strong>CONFIDENTIAL</strong> &middot; Risk scores are decision-support tools
