@@ -1335,7 +1335,7 @@ def render_chat_panel(patient_context_str: str, chat_key: str):
                 try:
                     genai.configure(api_key=api_key)
                     gemini_model = genai.GenerativeModel(
-                        model_name="gemini-2.0-flash",
+                        model_name="gemini-2.5-flash",
                         system_instruction=patient_context_str,
                     )
                     # Convert history to Gemini format — last message sent separately
