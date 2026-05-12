@@ -42,7 +42,7 @@ from sklearn.impute import SimpleImputer
 import xgboost as xgb
 import shap
 from fpdf import FPDF, XPos, YPos
-import anthropic
+import google.generativeai as genai
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -1285,9 +1285,9 @@ def render_chat_panel(patient_context_str: str, chat_key: str):
     # Retrieve API key from Streamlit secrets or environment variable
     api_key = ""
     try:
-        api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = os.environ.get("GEMINI_API_KEY", "")
 
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
     st.markdown(
@@ -1306,7 +1306,7 @@ def render_chat_panel(patient_context_str: str, chat_key: str):
         st.markdown(
             "<div class='warn-box'>"
             "⚠️ <strong>AI assistant not configured.</strong> "
-            "Add your <code>ANTHROPIC_API_KEY</code> to Streamlit secrets "
+            "Add your <code>GEMINI_API_KEY</code> to Streamlit secrets "
             "(Settings → Secrets) to enable this feature."
             "</div>",
             unsafe_allow_html=True,
@@ -1333,22 +1333,24 @@ def render_chat_panel(patient_context_str: str, chat_key: str):
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
-                    client = anthropic.Anthropic(api_key=api_key)
-                    response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=512,
-                        system=patient_context_str,
-                        messages=[
-                            {"role": m["role"], "content": m["content"]}
-                            for m in messages
-                        ],
+                    genai.configure(api_key=api_key)
+                    gemini_model = genai.GenerativeModel(
+                        model_name="gemini-1.5-flash",
+                        system_instruction=patient_context_str,
                     )
-                    reply = response.content[0].text
+                    # Convert history to Gemini format — last message sent separately
+                    gemini_history = [
+                        {
+                            "role": "user" if m["role"] == "user" else "model",
+                            "parts": [m["content"]],
+                        }
+                        for m in messages[:-1]
+                    ]
+                    chat = gemini_model.start_chat(history=gemini_history)
+                    response = chat.send_message(user_input)
+                    reply = response.text
                     st.markdown(reply)
                     messages.append({"role": "assistant", "content": reply})
-                except anthropic.AuthenticationError:
-                    st.error("⚠️ Invalid API key — please check your ANTHROPIC_API_KEY secret.")
-                    messages.pop()
                 except Exception as e:
                     st.error(f"⚠️ AI assistant error: {e}")
                     messages.pop()
@@ -1365,7 +1367,7 @@ def render_chat_panel(patient_context_str: str, chat_key: str):
     st.markdown(
         "<div style='font-size:11px;color:#94a3b8;margin-top:8px;"
         "padding:6px 0;border-top:1px solid #e2e8f0;'>"
-        "⚕️ <strong>Demo feature</strong> · Powered by Claude (Anthropic) · "
+        "⚕️ <strong>Demo feature</strong> · Powered by Gemini (Google) · "
         "Decision-support only — not a substitute for clinical judgment."
         "</div>",
         unsafe_allow_html=True,
