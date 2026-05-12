@@ -42,6 +42,7 @@ from sklearn.impute import SimpleImputer
 import xgboost as xgb
 import shap
 from fpdf import FPDF, XPos, YPos
+import anthropic
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -1206,6 +1207,173 @@ def compute_analysis(df_raw, target_col, split_ratio=0.8):
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AI Chatbot helpers — "Explain This Patient" assistant (demo feature)
+# ─────────────────────────────────────────────────────────────────────────────
+def build_patient_context(patient_data: dict, top_factors: list,
+                          prob: float, cat: str, model_name: str) -> str:
+    """Build a system-prompt context string for the AI from patient data."""
+    pct = int(prob * 100)
+    lines = [
+        "You are a clinical decision-support assistant helping a healthcare professional "
+        "understand a patient's predicted 30-day hospital readmission risk. "
+        "You explain the machine-learning model's output in plain clinical language.",
+        "",
+        "PATIENT RISK ASSESSMENT:",
+        f"  • Predicted 30-day readmission probability: {pct}%",
+        f"  • Risk tier: {cat}",
+        f"  • Model used: {model_name}",
+        "",
+        "TOP RISK DRIVERS (from SHAP analysis — positive = increases risk, negative = protective):",
+    ]
+    for feat, val in (top_factors or [])[:6]:
+        direction = "↑ increases risk" if val > 0 else "↓ protective / lowers risk"
+        label = humanize_feature(feat)
+        lines.append(f"  • {label}: {direction} (SHAP value: {val:+.4f})")
+
+    if patient_data:
+        lines.append("")
+        lines.append("PATIENT CLINICAL VALUES:")
+        readable_keys = {
+            'age': 'Age (years)', 'gender': 'Gender',
+            'weight_kg': 'Weight (kg)', 'height_cm': 'Height (cm)', 'bmi': 'BMI',
+            'num_previous_admissions': 'Previous admissions',
+            'medications_count': 'Number of medications',
+            'last_hemoglobin': 'Hemoglobin (g/dL)',
+            'last_glucose': 'Glucose (mg/dL)',
+            'last_creatinine': 'Creatinine (mg/dL)',
+            'length_of_stay': 'Length of stay (days)',
+            'procedures_count': 'Procedures performed',
+            'chronic_conditions': 'Chronic condition',
+            'admission_type': 'Admission type',
+            'smoking_status': 'Smoking status',
+            'alcohol_use': 'Alcohol use',
+            'physical_activity': 'Physical activity level',
+            'insurance_type': 'Insurance type',
+            'followup_compliance': 'Follow-up compliance',
+            'social_support': 'Social support strength',
+            'mental_health_issue': 'Mental health issue',
+        }
+        for k, label in readable_keys.items():
+            v = patient_data.get(k)
+            if v is not None and str(v) not in ('nan', 'NaN', ''):
+                lines.append(f"  • {label}: {v}")
+
+    lines += [
+        "",
+        "YOUR ROLE & CONSTRAINTS:",
+        "- Explain the model's reasoning clearly in plain clinical language.",
+        "- Answer questions about risk factors, what they mean for this patient, "
+          "and what evidence-based interventions may help.",
+        "- You are a DECISION-SUPPORT TOOL, not a replacement for clinical judgment.",
+        "- Keep answers concise (2-4 sentences unless detail is specifically requested).",
+        "- If asked for definitive medical advice, remind the clinician that final "
+          "decisions rest with the care team.",
+        "- Always end your response with a brief italic line: "
+          "'⚕️ *AI decision-support — apply your clinical judgment.*'",
+        "- Note: This is a demo feature for competition purposes.",
+    ]
+    return "\n".join(lines)
+
+
+def render_chat_panel(patient_context_str: str, chat_key: str):
+    """Render the 'Ask AI about this patient' chat panel."""
+    msg_key = f"chat_msgs_{chat_key}"
+    if msg_key not in st.session_state:
+        st.session_state[msg_key] = []
+    messages = st.session_state[msg_key]
+
+    # Retrieve API key from Streamlit secrets or environment variable
+    api_key = ""
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='panel-title'>🤖 Ask AI about this patient</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='panel-sub'>"
+        "Ask why this patient scored high risk, what the key drivers mean, or which "
+        "interventions may help. Powered by Claude — decision-support only."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not api_key:
+        st.markdown(
+            "<div class='warn-box'>"
+            "⚠️ <strong>AI assistant not configured.</strong> "
+            "Add your <code>ANTHROPIC_API_KEY</code> to Streamlit secrets "
+            "(Settings → Secrets) to enable this feature."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Render existing conversation history
+    for msg in messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat input
+    user_input = st.chat_input(
+        "Ask about this patient's risk…",
+        key=f"chat_input_{chat_key}",
+    )
+
+    if user_input:
+        messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    client = anthropic.Anthropic(api_key=api_key)
+                    response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=512,
+                        system=patient_context_str,
+                        messages=[
+                            {"role": m["role"], "content": m["content"]}
+                            for m in messages
+                        ],
+                    )
+                    reply = response.content[0].text
+                    st.markdown(reply)
+                    messages.append({"role": "assistant", "content": reply})
+                except anthropic.AuthenticationError:
+                    st.error("⚠️ Invalid API key — please check your ANTHROPIC_API_KEY secret.")
+                    messages.pop()
+                except Exception as e:
+                    st.error(f"⚠️ AI assistant error: {e}")
+                    messages.pop()
+
+        st.session_state[msg_key] = messages
+
+    # Clear chat button
+    if messages:
+        if st.button("🗑️ Clear chat", key=f"clear_chat_{chat_key}",
+                     help="Clear the conversation for this patient"):
+            st.session_state[msg_key] = []
+            st.rerun()
+
+    st.markdown(
+        "<div style='font-size:11px;color:#94a3b8;margin-top:8px;"
+        "padding:6px 0;border-top:1px solid #e2e8f0;'>"
+        "⚕️ <strong>Demo feature</strong> · Powered by Claude (Anthropic) · "
+        "Decision-support only — not a substitute for clinical judgment."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top horizontal navigation bar — view toggle
 # ─────────────────────────────────────────────────────────────────────────────
 nav_col1, nav_col2 = st.columns([3, 2])
@@ -2358,6 +2526,14 @@ else:
                             st.error(f"Could not generate the PDF: {e}")
                 st.markdown("</div>", unsafe_allow_html=True)
 
+                # ── AI Chatbot — Explain This Patient ───────────────────────
+                _np_ctx = build_patient_context(
+                    r['patient_dict'],
+                    S.last_top_factors or [],
+                    r['prob'], r['cat'], r['model_name'],
+                )
+                render_chat_panel(_np_ctx, chat_key="new_patient")
+
                 st.markdown("""
                 <div class='footer-compliance'>
                   <strong>CONFIDENTIAL</strong> &middot; Risk scores are decision-support tools
@@ -2686,6 +2862,15 @@ else:
                     except Exception as e:
                         st.error(f"Could not generate the PDF: {e}")
             st.markdown("</div>", unsafe_allow_html=True)
+
+            # ── AI Chatbot — Explain This Patient ───────────────────────────
+            _pt_ctx = build_patient_context(
+                df.iloc[idx].to_dict(),
+                top_factors_for_pdf,
+                prob, cat,
+                S.chosen_name or S.best_name or 'Model',
+            )
+            render_chat_panel(_pt_ctx, chat_key=f"patient_{idx}")
 
             st.markdown("""
             <div class='footer-compliance'>
